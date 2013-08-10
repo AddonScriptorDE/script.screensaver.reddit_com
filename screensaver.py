@@ -5,7 +5,10 @@ import xbmcgui
 import xbmcaddon
 import urllib
 import urllib2
+import sqlite3
+import json
 import re
+import os
 import random
 
 
@@ -24,7 +27,6 @@ class XBMCPlayer(xbmc.Player):
             xbmc.Player().pause()
         else:
             xbmc.Player().stop()
-        self.close()
 
     def onPlayBackEnded(self):
         playlist = xbmc.PlayList(xbmc.PLAYLIST_VIDEO)
@@ -43,7 +45,6 @@ class XBMCPlayer(xbmc.Player):
                 xbmc.Player().pause()
             else:
                 xbmc.Player().stop()
-            self.close()
 
 
 class window(xbmcgui.WindowXMLDialog):
@@ -63,7 +64,6 @@ class window(xbmcgui.WindowXMLDialog):
             xbmc.executebuiltin('XBMC.Notification(Video Screensaver:,'+translation(30005)+'!,5000)')
             myPlayer.stop()
             myWindow.close()
-            myPlayer.close()
 
     def onAction(self, action):
         ACTION_STOP = 13
@@ -72,13 +72,20 @@ class window(xbmcgui.WindowXMLDialog):
             myPlayer.stop()
 
 addon = xbmcaddon.Addon()
+addonID = addon.getAddonInfo('id')
+urlMain = "http://www.reddit.com"
 opener = urllib2.build_opener()
-opener.addheaders = [('User-Agent', 'Mozilla/5.0 (Windows NT 6.2; WOW64; rv:22.0) Gecko/20100101 Firefox/22.0')]
+userAgent = "XBMC | "+addonID+" | "+addon.getAddonInfo('version')
+opener.addheaders = [('User-Agent', userAgent)]
+hosterQuery = urllib.quote_plus("site:youtu.be OR site:youtube.com OR site:vimeo.com OR site:liveleak.com OR site:dailymotion.com")
 xbox = xbmc.getCondVisibility("System.Platform.xbox")
+translation = addon.getLocalizedString
 jumpBack = int(addon.getSetting("jumpBack"))
 type = int(addon.getSetting("type"))
-type = ["hot","day","week","month"][int(type)]
+type = ["hot","top","new","comments"][int(type)]
+playUnwatched = addon.getSetting("playUnwatched") == "true"
 setVolume = addon.getSetting("setVolume") == "true"
+reddit = addon.getSetting("reddit")
 volume = int(addon.getSetting("volume"))
 currentVolume = xbmc.getInfoLabel("Player.Volume")
 match=re.compile('(.+?) dB', re.DOTALL).findall(currentVolume)
@@ -91,7 +98,7 @@ playlist.clear()
 playbackInterrupted = False
 currentUrl = ""
 currentPosition = 0
-if xbmc.Player().isPlaying():
+if xbmc.Player().isPlayingVideo():
     currentUrl = xbmc.Player().getPlayingFile()
     currentPosition = xbmc.Player().getTime()
     xbmc.Player().stop()
@@ -102,31 +109,81 @@ def muted():
     return xbmc.getCondVisibility("Player.Muted")
 
 
+def getDbPath():
+    path = xbmc.translatePath("special://userdata/Database")
+    files = os.listdir(path)
+    latest = ""
+    for file in files:
+        if file[:8] == 'MyVideos' and file[-3:] == '.db':
+            if file > latest:
+                latest = file
+    return os.path.join(path, latest)
+
+
+def getPlayCount(url):
+    c.execute('SELECT playCount FROM files WHERE strFilename=?', [url])
+    result = c.fetchone()
+    if result:
+        result = result[0]
+        if result:
+            return int(result)
+        return 0
+    return -1
+
+
 def addVideos():
     entries = []
-    if type=="hot":
-        url = "http://www.reddit.com/r/videos/hot/.json?limit=100"
-    else:
-        url = "http://www.reddit.com/r/videos/top/.json?limit=100&t="+type
+    if type=="new":
+        url = urlMain+"/r/"+reddit+"/search.json?q="+hosterQuery+"&sort=new&restrict_sr=on&limit=100"
+    elif type=="hot":
+        url = urlMain+"/r/"+reddit+"/search.json?q="+hosterQuery+"&sort=hot&restrict_sr=on&limit=100&t=day"
+    elif type=="top":
+        url = urlMain+"/r/"+reddit+"/search.json?q="+hosterQuery+"&sort=top&restrict_sr=on&limit=100&t=week"
+    elif type=="comments":
+        url = urlMain+"/r/"+reddit+"/search.json?q="+hosterQuery+"&sort=comments&restrict_sr=on&limit=100&t=day"
     content = opener.open(url).read()
-    spl = content.split('"content"')
-    for i in range(1, len(spl), 1):
-        entry = spl[i]
-        match = re.compile('"title": "(.+?)"', re.DOTALL).findall(entry)
-        title = match[0]
-        matchYoutube = re.compile('"url": "http://www.youtube.com/watch\\?v=(.+?)"', re.DOTALL).findall(entry)
-        matchVimeo = re.compile('"url": "http://vimeo.com/(.+?)"', re.DOTALL).findall(entry)
-        url = ""
-        if matchYoutube:
-            url = getYoutubeUrl(matchYoutube[0])
-        elif matchVimeo:
-            url = getVimeoUrl(matchVimeo[0].replace("#", ""))
-        if url:
-            entries.append([title, url])
+    content = json.loads(content.replace('\\"', '\''))
+    for entry in content['data']['children']:
+        try:
+            title = cleanTitle(entry['data']['media']['oembed']['title'].encode('utf-8'))
+            try:
+                url = entry['data']['media']['oembed']['url']+'"'
+            except:
+                url = entry['data']['url']+'"'
+            matchYoutube = re.compile('youtube.com/watch\\?v=(.+?)"', re.DOTALL).findall(url)
+            matchVimeo = re.compile('vimeo.com/(.+?)"', re.DOTALL).findall(url)
+            matchDailyMotion = re.compile('dailymotion.com/video/(.+?)_', re.DOTALL).findall(url)
+            matchDailyMotion2 = re.compile('dailymotion.com/.+?video=(.+?)', re.DOTALL).findall(url)
+            matchLiveLeak = re.compile('liveleak.com/view\\?i=(.+?)"', re.DOTALL).findall(url)
+            url = ""
+            if matchYoutube:
+                url = getYoutubeUrl(matchYoutube[0])
+            elif matchVimeo:
+                url = getVimeoUrl(matchVimeo[0].replace("#", "").split("?")[0])
+            elif matchDailyMotion:
+                url = getDailyMotionUrl(matchDailyMotion[0])
+            elif matchDailyMotion2:
+                url = getDailyMotionUrl(matchDailyMotion2[0])
+            elif matchLiveLeak:
+                url = getLiveLeakUrl(matchLiveLeak[0])
+            if url:
+                url = "plugin://plugin.video.reddit_tv/?url="+urllib.quote_plus(url)+"&mode=playVideo"
+                if playUnwatched:
+                    if getPlayCount(url) < 0:
+                        entries.append([title, url])
+                else:
+                    entries.append([title, url])
+        except:
+            pass
     random.shuffle(entries)
     for title, url in entries:
         listitem = xbmcgui.ListItem(title)
         playlist.add(url, listitem)
+
+
+def cleanTitle(title):
+        title = title.replace("&lt;","<").replace("&gt;",">").replace("&amp;","&").replace("&#039;","'").replace("&quot;","\"")
+        return title.strip()
 
 
 def getYoutubeUrl(id):
@@ -145,6 +202,26 @@ def getVimeoUrl(id):
     return url
 
 
+def getDailyMotionUrl(id):
+    if xbox:
+        url = "plugin://video/DailyMotion.com/?url=" + id + "&mode=playVideo"
+    else:
+        url = "plugin://plugin.video.dailymotion_com/?url=" + id + "&mode=playVideo"
+    return url
+
+
+def getLiveLeakUrl(id):
+    if xbox:
+        url = "plugin://video/Reddit.com/?url=" + id + "&mode=playLiveLeakVideo"
+    else:
+        url = "plugin://plugin.video.reddit_tv/?url=" + id + "&mode=playLiveLeakVideo"
+    return url
+
+
+dbPath = getDbPath()
+conn = sqlite3.connect(dbPath)
+c = conn.cursor()
+
 param = ""
 if len(sys.argv)>1:
     param = urllib.unquote_plus(sys.argv[1])
@@ -157,5 +234,5 @@ if param=="tv_mode":
         xbmc.Player().play(playlist)
     else:
         xbmc.executebuiltin('XBMC.Notification(Video Screensaver:,'+translation(30005)+'!,5000)')
-else:
+elif not xbmc.Player().isPlayingAudio():
     myWindow.doModal()
