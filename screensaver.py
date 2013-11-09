@@ -49,27 +49,33 @@ class XBMCPlayer(xbmc.Player):
 
 class window(xbmcgui.WindowXMLDialog):
     def onInit(self):
-        try:
-            addVideos()
-        except:
-            pass
-        if playlist:
-            if setVolume and not muted():
-                if volume==0:
-                    xbmc.executebuiltin('XBMC.Mute()')
-                else:
-                    xbmc.executebuiltin('XBMC.SetVolume('+str(volume)+')')
-            myPlayer.play(playlist)
-        else:
-            xbmc.executebuiltin('XBMC.Notification(Video Screensaver:,'+translation(30005)+'!,5000)')
-            myPlayer.stop()
-            myWindow.close()
+        if content=="video":
+            try:
+                addVideos()
+            except:
+                pass
+            if playlist:
+                if setVolume and not muted():
+                    if volume==0:
+                        xbmc.executebuiltin('XBMC.Mute()')
+                    else:
+                        xbmc.executebuiltin('XBMC.SetVolume('+str(volume)+')')
+                myPlayer.play(playlist)
+            else:
+                xbmc.executebuiltin('XBMC.Notification(Video Screensaver:,'+translation(30005)+'!,5000)')
+                myPlayer.stop()
+                myWindow.close()
+        elif content=="image":
+            playSlideshow()
 
     def onAction(self, action):
-        ACTION_STOP = 13
-        ACTION_PREVIOUS_MENU = 10
-        if action in [ACTION_PREVIOUS_MENU, ACTION_STOP]:
-            myPlayer.stop()
+        if content=="image":
+            myWindow.close()
+        else:
+            ACTION_STOP = 13
+            ACTION_PREVIOUS_MENU = 10
+            if action in [ACTION_PREVIOUS_MENU, ACTION_STOP]:
+                myPlayer.stop()
 
 addon = xbmcaddon.Addon()
 addonID = addon.getAddonInfo('id')
@@ -78,14 +84,17 @@ opener = urllib2.build_opener()
 userAgent = "XBMC | "+addonID+" | "+addon.getAddonInfo('version')
 opener.addheaders = [('User-Agent', userAgent)]
 hosterQuery = urllib.quote_plus("site:youtu.be OR site:youtube.com OR site:vimeo.com OR site:liveleak.com OR site:dailymotion.com")
+hosterQueryImages = urllib.quote_plus("site:imgur.com")
 xbox = xbmc.getCondVisibility("System.Platform.xbox")
 translation = addon.getLocalizedString
 jumpBack = int(addon.getSetting("jumpBack"))
 type = int(addon.getSetting("type"))
 type = ["hot","top","new","comments"][int(type)]
+content = int(addon.getSetting("content"))
+content = ["video","image"][int(content)]
 playUnwatched = addon.getSetting("playUnwatched") == "true"
 setVolume = addon.getSetting("setVolume") == "true"
-reddit = addon.getSetting("reddit")
+subreddit = addon.getSetting("subreddit")
 volume = int(addon.getSetting("volume"))
 currentVolume = xbmc.getInfoLabel("Player.Volume")
 match=re.compile('(.+?) dB', re.DOTALL).findall(currentVolume)
@@ -117,30 +126,34 @@ def getDbPath():
         if file[:8] == 'MyVideos' and file[-3:] == '.db':
             if file > latest:
                 latest = file
-    return os.path.join(path, latest)
+    if latest:
+        return os.path.join(path, latest)
+    else:
+        return ""
 
 
 def getPlayCount(url):
-    c.execute('SELECT playCount FROM files WHERE strFilename=?', [url])
-    result = c.fetchone()
-    if result:
-        result = result[0]
+    if dbPath:
+        c.execute('SELECT playCount FROM files WHERE strFilename=?', [url])
+        result = c.fetchone()
         if result:
-            return int(result)
-        return 0
+            result = result[0]
+            if result:
+                return int(result)
+            return 0
     return -1
 
 
 def addVideos():
     entries = []
     if type=="new":
-        url = urlMain+"/r/"+reddit+"/search.json?q="+hosterQuery+"&sort=new&restrict_sr=on&limit=100"
+        url = urlMain+"/r/"+subreddit+"/search.json?q="+hosterQuery+"&sort=new&restrict_sr=on&limit=100"
     elif type=="hot":
-        url = urlMain+"/r/"+reddit+"/search.json?q="+hosterQuery+"&sort=hot&restrict_sr=on&limit=100&t=day"
+        url = urlMain+"/r/"+subreddit+"/search.json?q="+hosterQuery+"&sort=hot&restrict_sr=on&limit=100&t=day"
     elif type=="top":
-        url = urlMain+"/r/"+reddit+"/search.json?q="+hosterQuery+"&sort=top&restrict_sr=on&limit=100&t=week"
+        url = urlMain+"/r/"+subreddit+"/search.json?q="+hosterQuery+"&sort=top&restrict_sr=on&limit=100&t=week"
     elif type=="comments":
-        url = urlMain+"/r/"+reddit+"/search.json?q="+hosterQuery+"&sort=comments&restrict_sr=on&limit=100&t=day"
+        url = urlMain+"/r/"+subreddit+"/search.json?q="+hosterQuery+"&sort=comments&restrict_sr=on&limit=100&t=day"
     content = opener.open(url).read()
     content = json.loads(content.replace('\\"', '\''))
     for entry in content['data']['children']:
@@ -181,6 +194,18 @@ def addVideos():
         playlist.add(url, listitem)
 
 
+def playSlideshow():
+    if type=="new":
+        url = urlMain+"/r/"+subreddit+"/search.json?q="+hosterQueryImages+"&sort=new&restrict_sr=on&limit=100"
+    elif type=="hot":
+        url = urlMain+"/r/"+subreddit+"/search.json?q="+hosterQueryImages+"&sort=hot&restrict_sr=on&limit=100&t=day"
+    elif type=="top":
+        url = urlMain+"/r/"+subreddit+"/search.json?q="+hosterQueryImages+"&sort=top&restrict_sr=on&limit=100&t=week"
+    elif type=="comments":
+        url = urlMain+"/r/"+subreddit+"/search.json?q="+hosterQueryImages+"&sort=comments&restrict_sr=on&limit=100&t=day"
+    xbmc.executebuiltin("SlideShow(plugin://plugin.image.reddit_com/?mode=listImages&type="+subreddit+"&url="+urllib.quote_plus(url)+", random)")
+
+
 def cleanTitle(title):
         title = title.replace("&lt;","<").replace("&gt;",">").replace("&amp;","&").replace("&#039;","'").replace("&quot;","\"")
         return title.strip()
@@ -219,8 +244,9 @@ def getLiveLeakUrl(id):
 
 
 dbPath = getDbPath()
-conn = sqlite3.connect(dbPath)
-c = conn.cursor()
+if dbPath:
+    conn = sqlite3.connect(dbPath)
+    c = conn.cursor()
 
 param = ""
 if len(sys.argv)>1:
@@ -234,5 +260,5 @@ if param=="tv_mode":
         xbmc.Player().play(playlist)
     else:
         xbmc.executebuiltin('XBMC.Notification(Video Screensaver:,'+translation(30005)+'!,5000)')
-elif not xbmc.Player().isPlayingAudio():
+elif not xbmc.Player().isPlayingAudio() or content=="image":
     myWindow.doModal()
